@@ -21,7 +21,7 @@ class XianyuReplyBot:
     def _init_agents(self):
         """初始化各领域Agent"""
         self.agents = {
-            'classify':ClassifyAgent(self.client, self.classify_prompt, self._safe_filter),
+            'classify': ClassifyAgent(self.client, self.classify_prompt, self._safe_filter),
             'price': PriceAgent(self.client, self.price_prompt, self._safe_filter),
             'tech': TechAgent(self.client, self.tech_prompt, self._safe_filter),
             'default': DefaultAgent(self.client, self.default_prompt, self._safe_filter),
@@ -30,7 +30,7 @@ class XianyuReplyBot:
     def _init_system_prompts(self):
         """初始化各Agent专用提示词，优先加载用户自定义文件，否则使用Example默认文件"""
         prompt_dir = "prompts"
-        
+
         def load_prompt_content(name: str) -> str:
             """尝试加载提示词文件"""
             # 优先尝试加载 target.txt
@@ -55,7 +55,7 @@ class XianyuReplyBot:
             self.tech_prompt = load_prompt_content("tech_prompt")
             # 加载默认提示词
             self.default_prompt = load_prompt_content("default_prompt")
-                
+
             logger.info("成功加载所有提示词")
         except Exception as e:
             logger.error(f"加载提示词时出错: {e}")
@@ -72,21 +72,18 @@ class XianyuReplyBot:
         user_assistant_msgs = [msg for msg in context if msg['role'] in ['user', 'assistant']]
         return "\n".join([f"{msg['role']}: {msg['content']}" for msg in user_assistant_msgs])
 
-    def generate_reply(self, user_msg: str, item_desc: str, context: List[Dict]) -> str:
+    def generate_reply(self, user_id: str, user_msg: str, item_desc: str, context: List[Dict]) -> str:
         """生成回复主流程"""
         # 记录用户消息
         # logger.debug(f'用户所发消息: {user_msg}')
-        
+
         formatted_context = self.format_history(context)
         # logger.debug(f'对话历史: {formatted_context}')
-        
+
         # 1. 路由决策
-        detected_intent = self.router.detect(user_msg, item_desc, formatted_context)
-
-
+        detected_intent = self.router.detect(user_id, user_msg, item_desc, formatted_context)
 
         # 2. 获取对应Agent
-
         internal_intents = {'classify'}  # 定义不对外开放的Agent
 
         if detected_intent == 'no_reply':
@@ -102,7 +99,7 @@ class XianyuReplyBot:
             agent = self.agents['default']
             logger.info(f'意图识别完成: default')
             self.last_intent = 'default'  # 保存当前意图
-        
+
         # 3. 获取议价次数
         bargain_count = self._extract_bargain_count(context)
         logger.info(f'议价次数: {bargain_count}')
@@ -112,9 +109,10 @@ class XianyuReplyBot:
             user_msg=user_msg,
             item_desc=item_desc,
             context=formatted_context,
-            bargain_count=bargain_count
+            bargain_count=bargain_count,
+            user_id=user_id,
         )
-    
+
     def _extract_bargain_count(self, context: List[Dict]) -> int:
         """
         从上下文中提取议价次数信息
@@ -153,7 +151,7 @@ class IntentRouter:
             'tech': {  # 技术类优先判定
                 'keywords': ['参数', '规格', '型号', '连接', '对比'],
                 'patterns': [
-                    r'和.+比'             
+                    r'和.+比'
                 ]
             },
             'price': {
@@ -163,15 +161,15 @@ class IntentRouter:
         }
         self.classify_agent = classify_agent
 
-    def detect(self, user_msg: str, item_desc, context) -> str:
+    def detect(self, user_id: str, user_msg: str, item_desc, context) -> str:
         """三级路由策略（技术优先）"""
         text_clean = re.sub(r'[^\w\u4e00-\u9fa5]', '', user_msg)
-        
+
         # 1. 技术类关键词优先检查
         if any(kw in text_clean for kw in self.rules['tech']['keywords']):
             # logger.debug(f"技术类关键词匹配: {[kw for kw in self.rules['tech']['keywords'] if kw in text_clean]}")
             return 'tech'
-            
+
         # 2. 技术类正则优先检查
         for pattern in self.rules['tech']['patterns']:
             if re.search(pattern, text_clean):
@@ -183,18 +181,19 @@ class IntentRouter:
             if any(kw in text_clean for kw in self.rules[intent]['keywords']):
                 # logger.debug(f"价格类关键词匹配: {[kw for kw in self.rules[intent]['keywords'] if kw in text_clean]}")
                 return intent
-            
+
             for pattern in self.rules[intent]['patterns']:
                 if re.search(pattern, text_clean):
                     # logger.debug(f"价格类正则匹配: {pattern}")
                     return intent
-        
+
         # 4. 大模型兜底
         # logger.debug("使用大模型进行意图分类")
         return self.classify_agent.generate(
             user_msg=user_msg,
             item_desc=item_desc,
-            context=context
+            context=context,
+            user_id=user_id,
         )
 
 
@@ -206,16 +205,16 @@ class BaseAgent:
         self.system_prompt = system_prompt
         self.safety_filter = safety_filter
 
-    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int = 0) -> str:
+    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int = 0, user_id=0) -> str:
         """生成回复模板方法"""
-        messages = self._build_messages(user_msg, item_desc, context)
+        messages = self._build_messages(user_msg, item_desc, context, user_id)
         response = self._call_llm(messages)
         return self.safety_filter(response)
 
-    def _build_messages(self, user_msg: str, item_desc: str, context: str) -> List[Dict]:
+    def _build_messages(self, user_msg: str, item_desc: str, context: str, user_id=0) -> List[Dict]:
         """构建消息链"""
         return [
-            {"role": "system", "content": f"【商品信息】{item_desc}\n【你与客户对话历史】{context}\n{self.system_prompt}"},
+            {"role": "system", "content": f"【商品信息】{item_desc}\n【用户ID】{user_id}\n【你与客户对话历史】{context}\n{self.system_prompt}"},
             {"role": "user", "content": user_msg}
         ]
 
@@ -234,7 +233,7 @@ class BaseAgent:
 class PriceAgent(BaseAgent):
     """议价处理Agent"""
 
-    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int=0) -> str:
+    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int = 0, user_id=0) -> str:
         """重写生成逻辑"""
         dynamic_temp = self._calc_temperature(bargain_count)
         messages = self._build_messages(user_msg, item_desc, context)
@@ -256,7 +255,8 @@ class PriceAgent(BaseAgent):
 
 class TechAgent(BaseAgent):
     """技术咨询Agent"""
-    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int=0) -> str:
+
+    def generate(self, user_msg: str, item_desc: str, context: str, bargain_count: int = 0, user_id=0) -> str:
         """重写生成逻辑"""
         messages = self._build_messages(user_msg, item_desc, context)
         # messages[0]['content'] += "\n▲知识库：\n" + self._fetch_tech_specs()
@@ -273,7 +273,6 @@ class TechAgent(BaseAgent):
         )
 
         return self.safety_filter(response.choices[0].message.content)
-
 
     # def _fetch_tech_specs(self) -> str:
     #     """模拟获取技术参数（可连接数据库）"""

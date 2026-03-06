@@ -509,6 +509,7 @@ class XianyuLive:
             context = self.context_manager.get_context_by_chat(chat_id)
             # 生成回复
             bot_reply = bot.generate_reply(
+                str(send_user_id),
                 send_message,
                 item_description,
                 context=context
